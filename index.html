@@ -292,20 +292,39 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 </nav>
 <div id="scanner-overlay" style="display:none" class="scanner-overlay">
   <div class="scanner-header">
-    <div class="scanner-title">Scan barcode / QR</div>
+    <div class="scanner-title">Capture serial number</div>
     <button class="scanner-close" onclick="closeScanner()">&#10005;</button>
   </div>
-  <div class="scanner-viewport">
-    <video id="scanner-video" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover;display:block"></video>
+
+  <div id="scan-mode-photo" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px 24px;gap:16px">
+    <div style="font-size:52px">&#128247;</div>
+    <div style="color:#fff;font-size:17px;font-weight:700;text-align:center">Take a photo of the barcode</div>
+    <div style="color:#94a3b8;font-size:13px;text-align:center;line-height:1.7">Uses your Samsung camera with full autofocus.<br>The app reads the barcode from the photo automatically.</div>
+    <label style="width:100%;padding:15px;background:#38bdf8;color:#0f172a;border:none;border-radius:8px;font-size:15px;font-weight:700;text-align:center;cursor:pointer;display:block;margin-top:8px">
+      &#128248; Open Camera &amp; Capture
+      <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none" onchange="processPhoto(this)">
+    </label>
+    <div id="photo-status" style="color:#94a3b8;font-size:13px;text-align:center;min-height:20px;line-height:1.5"></div>
     <canvas id="scanner-canvas" style="display:none"></canvas>
-    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
-      <div style="width:75%;height:120px;border:2px solid #38bdf8;border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5);position:relative">
-        <div id="scan-line" style="position:absolute;left:8px;right:8px;height:2px;background:#38bdf8;top:50%;animation:scan 1.8s ease-in-out infinite"></div>
+  </div>
+
+  <div id="scan-mode-live" style="display:none;flex:1;flex-direction:column">
+    <div style="flex:1;position:relative;overflow:hidden;background:#111">
+      <video id="scanner-video" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover;display:block"></video>
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+        <div style="width:75%;height:110px;border:2px solid #38bdf8;border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5);position:relative">
+          <div style="position:absolute;left:8px;right:8px;height:2px;background:#38bdf8;top:50%;animation:scan 1.8s ease-in-out infinite"></div>
+        </div>
       </div>
     </div>
+    <div id="scan-debug" style="padding:6px 14px;background:#0a0a0a;font-size:11px;color:#475569;line-height:1.6;max-height:72px;overflow:hidden"></div>
   </div>
-  <div class="scanner-hint">Point camera at the barcode or QR code on the device</div>
-  <div id="scan-debug" style="padding:8px 16px;background:rgba(0,0,0,.7);font-size:11px;color:#94a3b8;line-height:1.6;min-height:40px"></div>
+
+  <div style="padding:12px 16px;background:#0f172a;display:flex;gap:8px;border-top:1px solid #1e293b">
+    <button onclick="setPhotoMode()" id="btn-photo-mode" style="flex:1;padding:10px;background:#38bdf8;color:#0f172a;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">&#128247; Photo mode</button>
+    <button onclick="setLiveMode()" id="btn-live-mode" style="flex:1;padding:10px;background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">&#127909; Live scan</button>
+  </div>
+
   <div class="scanner-manual">
     <input type="text" id="manual-serial" placeholder="Or type serial number manually..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
     <button class="scanner-manual-btn" onclick="useManualSerial()">Use this serial</button>
@@ -512,146 +531,68 @@ let scanStream=null;
 let scanAnimFrame=null;
 let barcodeDetector=null;
 
-function dbg(msg){
-  const el=document.getElementById('scan-debug');
-  if(el){el.innerHTML+=(el.innerHTML?'<br>':'')+msg;}
-  console.log('[SCAN]',msg);
-}
-
-async function openScanner(){
-  const el=document.getElementById('scan-debug');
-  if(el)el.innerHTML='';
+function openScanner(){
+  // Reset file input so same file can be picked again
+  const fi=document.getElementById('barcode-file-input');
+  fi.setAttribute('capture','environment');
+  fi.value='';
+  document.getElementById('scan-status').textContent='';
   document.getElementById('scanner-overlay').style.display='flex';
-  document.getElementById('manual-serial').value='';
-  const video=document.getElementById('scanner-video');
-  const canvas=document.getElementById('scanner-canvas');
-  const ctx=canvas.getContext('2d');
-
-  try{
-    if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}
-    if(scanAnimFrame){cancelAnimationFrame(scanAnimFrame);scanAnimFrame=null;}
-
-    dbg('Starting camera...');
-    try{
-      scanStream=await navigator.mediaDevices.getUserMedia({
-        video:{facingMode:{exact:'environment'},width:{ideal:3840},height:{ideal:2160}}
-      });
-    }catch(e){
-      dbg('4K failed, trying 1080p...');
-      try{
-        scanStream=await navigator.mediaDevices.getUserMedia({
-          video:{facingMode:{exact:'environment'},width:{ideal:1920},height:{ideal:1080}}
-        });
-      }catch(e2){
-        dbg('1080p failed, trying any...');
-        scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-      }
-    }
-
-    video.srcObject=scanStream;
-    await video.play();
-    const track=scanStream.getVideoTracks()[0];
-    const settings=track.getSettings();
-    dbg('Camera: '+settings.width+'x'+settings.height);
-
-    // Try to apply zoom (2x) and best focus mode available
-    setTimeout(async()=>{
-      try{
-        const caps=track.getCapabilities();
-        dbg('Focus modes: '+(caps.focusMode||[]).join(','));
-        dbg('Zoom range: '+(caps.zoom?caps.zoom.min+'-'+caps.zoom.max:'none'));
-        const adv={};
-        // Focus: prefer continuous, then macro, else leave as-is
-        if(caps.focusMode?.includes('continuous')) adv.focusMode='continuous';
-        else if(caps.focusMode?.includes('macro')) adv.focusMode='macro';
-        // Zoom: use 1.5x if supported to make barcode bigger in frame
-        if(caps.zoom&&caps.zoom.max>=1.5){
-          adv.zoom=Math.min(2.0, caps.zoom.max);
-          dbg('Applying zoom: '+adv.zoom+'x');
-        }
-        if(Object.keys(adv).length) await track.applyConstraints({advanced:[adv]});
-        dbg('Constraints applied: '+JSON.stringify(adv));
-      }catch(e){dbg('Constraint err: '+e.message)}
-    },700);
-
-    // Check BarcodeDetector
-    const hasNative='BarcodeDetector' in window;
-    dbg('BarcodeDetector: '+(hasNative?'YES':'NO'));
-
-    if(hasNative){
-      const supported=await BarcodeDetector.getSupportedFormats().catch(()=>[]);
-      dbg('Formats: '+supported.slice(0,4).join(',')+' +more');
-      const formats=supported.length?supported:['code_128','code_39','ean_13','ean_8','upc_a','upc_e','qr_code'];
-      barcodeDetector=new BarcodeDetector({formats});
-      let frameCount=0;
-      let detected=false;
-      async function detectFrame(){
-        if(!scanStream||detected)return;
-        if(video.readyState>=2){
-          frameCount++;
-          if(frameCount%30===0) dbg('Scanning... frame '+frameCount);
-          canvas.width=video.videoWidth;
-          canvas.height=video.videoHeight;
-          ctx.drawImage(video,0,0);
-          try{
-            const barcodes=await barcodeDetector.detect(canvas);
-            if(barcodes.length>0){
-              detected=true;
-              const val=barcodes[0].rawValue;
-              dbg('Found: '+val);
-              closeScanner();
-              document.getElementById('f-serial').value=val;
-              showToast('Captured: '+val,'success');
-              return;
-            }
-          }catch(e){if(frameCount<5)dbg('Detect err: '+e.message)}
-        }
-        scanAnimFrame=requestAnimationFrame(detectFrame);
-      }
-      detectFrame();
-    } else {
-      dbg('Loading ZXing fallback...');
-      if(!window.ZXingLoaded){
-        await new Promise((res,rej)=>{
-          const s=document.createElement('script');
-          s.src='https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js';
-          s.onload=()=>{window.ZXingLoaded=true;dbg('ZXing loaded');res()};
-          s.onerror=(e)=>{dbg('ZXing load failed');rej(e)};
-          document.head.appendChild(s);
-        });
-      }
-      const codeReader=new ZXingBrowser.BrowserMultiFormatReader();
-      codeReader.decodeFromVideoElement(video).then(result=>{
-        if(result){
-          const val=result.getText();
-          dbg('ZXing found: '+val);
-          closeScanner();
-          document.getElementById('f-serial').value=val;
-          showToast('Captured: '+val,'success');
-        }
-      }).catch(e=>dbg('ZXing err: '+e.message));
-      video._zxing=codeReader;
-    }
-  }catch(e){
-    dbg('ERROR: '+e.message);
-    showToast('Camera error — type serial manually');
-  }
 }
 
 function closeScanner(){
   document.getElementById('scanner-overlay').style.display='none';
-  if(scanAnimFrame){cancelAnimationFrame(scanAnimFrame);scanAnimFrame=null;}
-  if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}
-  const video=document.getElementById('scanner-video');
-  if(video._zxing){try{video._zxing.reset()}catch(e){}video._zxing=null;}
-  video.srcObject=null;
-  barcodeDetector=null;
 }
+
+async function processBarcodePic(input){
+  const file=input.files[0];
+  if(!file)return;
+  const statusEl=document.getElementById('scan-status');
+  statusEl.textContent='Reading barcode...';
+
+  try{
+    // Use native BarcodeDetector on the captured image
+    if('BarcodeDetector' in window){
+      const supported=await BarcodeDetector.getSupportedFormats().catch(()=>
+        ['code_128','code_39','code_93','ean_13','ean_8','upc_a','upc_e','qr_code','data_matrix','pdf417','itf','codabar']);
+      const detector=new BarcodeDetector({formats:supported});
+      const img=await createImageBitmap(file);
+      const barcodes=await detector.detect(img);
+      if(barcodes.length>0){
+        const val=barcodes[0].rawValue;
+        document.getElementById('f-serial').value=val;
+        closeScanner();
+        showToast('Captured: '+val,'success');
+        return;
+      }
+      // If no barcode found, try drawing to canvas at full res and detect again
+      const canvas=document.getElementById('scanner-canvas');
+      canvas.width=img.width;canvas.height=img.height;
+      canvas.getContext('2d').drawImage(img,0,0);
+      const barcodes2=await detector.detect(canvas);
+      if(barcodes2.length>0){
+        const val=barcodes2[0].rawValue;
+        document.getElementById('f-serial').value=val;
+        closeScanner();
+        showToast('Captured: '+val,'success');
+        return;
+      }
+      statusEl.textContent='No barcode found. Try better lighting or get closer.';
+    } else {
+      statusEl.textContent='Barcode detection not supported. Type manually below.';
+    }
+  }catch(e){
+    console.warn('Barcode read error:',e);
+    statusEl.textContent='Could not read image. Try again or type manually.';
+  }
+}
+
 function useManualSerial(){
   const val=document.getElementById('manual-serial').value.trim();
   if(!val){showToast('Enter a serial number','error');return}
   document.getElementById('f-serial').value=val;
-  closeScanner();showToast('Serial: '+val,'success');
+  closeScanner();
+  showToast('Serial: '+val,'success');
 }
 
 function populateExpDept(){
