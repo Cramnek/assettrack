@@ -110,11 +110,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .scanner-header{padding:16px;display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,.7)}
 .scanner-title{font-size:16px;font-weight:600;color:#fff}
 .scanner-close{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);border:none;color:#fff;font-size:20px;cursor:pointer}
-.scanner-viewport{flex:1;position:relative;overflow:hidden;background:#111}
-.scanner-viewport video{width:100%;height:100%;object-fit:cover}
-.scanner-frame{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
-.scanner-box{width:260px;height:160px;border:2px solid var(--accent);border-radius:12px;position:relative;box-shadow:0 0 0 9999px rgba(0,0,0,.5)}
-.scanner-line{position:absolute;left:10px;right:10px;height:2px;background:var(--accent);animation:scan 2s ease-in-out infinite}
+.scanner-viewport{flex:1;position:relative;overflow:hidden;background:#111;display:flex;align-items:center;justify-content:center}
+#scanner-reader{width:100%!important;border:none!important;background:transparent!important}
+#scanner-reader video{width:100%!important;height:auto!important}
+#scanner-reader img{display:none!important}
 @keyframes scan{0%,100%{top:15%}50%{top:80%}}
 .scanner-hint{color:#fff;font-size:14px;text-align:center;padding:16px;background:rgba(0,0,0,.6)}
 .scanner-manual{padding:16px;background:rgba(0,0,0,.7)}
@@ -299,10 +298,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
     <button class="scanner-close" onclick="closeScanner()">&#10005;</button>
   </div>
   <div class="scanner-viewport">
-    <video id="scanner-video" playsinline autoplay muted></video>
-    <div class="scanner-frame">
-      <div class="scanner-box"><div class="scanner-line"></div></div>
-    </div>
+    <div id="scanner-reader" style="width:100%;height:100%"></div>
   </div>
   <div class="scanner-hint">Point camera at the barcode or QR code on the device</div>
   <div class="scanner-manual">
@@ -311,24 +307,24 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
   </div>
 </div>
 <div class="toast" id="toast"></div>
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.19.1/umd/index.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
 const DB_KEY='assettrack_v1';
 let db={assets:[],nextId:1};
 function loadDB(){try{const s=localStorage.getItem(DB_KEY);if(s)db=JSON.parse(s)}catch(e){}}
 function saveDB(){try{localStorage.setItem(DB_KEY,JSON.stringify(db))}catch(e){showToast('Storage error','error')}}
 loadDB();
-
+ 
 function getUnique(field){
   const keyMap={Type:'type',Description:'description',Manufacturer:'manufacturer',
     Model:'model',Account:'account',Department:'department',Assigned:'assigned',Vendor:'vendor'};
   const k=keyMap[field]||field.toLowerCase();
   return[...new Set(db.assets.map(a=>a[k]).filter(Boolean))].sort();
 }
-
+ 
 let editingId=null;
 let activeFilter='All';
-
+ 
 function setNav(name){
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
   const el=document.getElementById('nav-'+name);
@@ -354,12 +350,12 @@ function showExport(){
   showView('export');setNav('export');
   renderExportSummary();populateExpDept();
 }
-
+ 
 function setTodayDate(){
   const d=new Date();
   document.getElementById('f-purchase-date').value=d.toISOString().split('T')[0];
 }
-
+ 
 function renderStats(){
   const t=db.assets.length;
   const active=db.assets.filter(a=>a.status==='Active'||a.status==='Deployed').length;
@@ -372,13 +368,13 @@ function renderStats(){
     sc('Needs attention',attn,'for repair',attn>0?'var(--amber)':'var(--green)');
 }
 function sc(l,v,s,c){return`<div class="stat"><div class="stat-lbl">${l}</div><div class="stat-val"${c?` style="color:${c}"`:''}>${v}</div><div class="stat-sub">${s}</div></div>`}
-
+ 
 function renderChips(){
   const types=['All',...new Set(db.assets.map(a=>a.type).filter(Boolean))].sort((a,b)=>a==='All'?-1:a.localeCompare(b));
   document.getElementById('filter-chips').innerHTML=types.map(t=>`<div class="chip${t===activeFilter?' active':''}" onclick="setFilter('${t.replace(/'/g,"\\'")}')">${t}</div>`).join('');
 }
 function setFilter(t){activeFilter=t;renderChips();renderList()}
-
+ 
 function condBadge(c){
   const m={New:'new',Good:'good','For repair':'repair','For disposal':'disposal'};
   return`<span class="badge b-${m[c]||'good'}">${c}</span>`;
@@ -405,7 +401,7 @@ function renderList(){
     <div class="acard-meta">${a.condition?condBadge(a.condition):''}${a.status?statusBadge(a.status):''}${a.department?`<span class="badge b-type">${a.department}</span>`:''}</div>
   </div>`).join('');
 }
-
+ 
 function showDetail(id){
   const a=db.assets.find(x=>x.id===id);
   if(!a)return;
@@ -431,7 +427,7 @@ function showDetail(id){
     </div>
     <button class="btn btn-secondary" onclick="showHome()">Back to list</button>`;
 }
-
+ 
 function editAsset(id){
   const a=db.assets.find(x=>x.id===id);if(!a)return;
   editingId=id;
@@ -443,14 +439,14 @@ function editAsset(id){
   set('f-status',a.status);set('f-account',a.account);set('f-department',a.department);
   set('f-assigned',a.assigned);set('f-purchase-date',a.purchaseDate);set('f-vendor',a.vendor);
 }
-
+ 
 function confirmDelete(id){
   if(confirm('Delete this asset? This cannot be undone.')){
     db.assets=db.assets.filter(a=>a.id!==id);
     saveDB();showToast('Asset deleted');showHome();
   }
 }
-
+ 
 function clearForm(){
   ['f-serial','f-type','f-description','f-manufacturer','f-model','f-account','f-department','f-assigned','f-vendor'].forEach(id=>{
     const el=document.getElementById(id);if(el)el.value='';
@@ -459,7 +455,7 @@ function clearForm(){
   document.getElementById('f-status').value='';
   document.getElementById('f-purchase-date').value='';
 }
-
+ 
 function saveAsset(){
   const g=id=>document.getElementById(id).value.trim();
   const serial=g('f-serial'),type=g('f-type'),desc=g('f-description');
@@ -481,7 +477,7 @@ function saveAsset(){
   showToast(editingId?'Asset updated':'Asset saved','success');
   editingId=null;showHome();
 }
-
+ 
 function onAcInput(input,field){
   const listEl=document.getElementById('ac-'+field);
   const val=input.value.trim();
@@ -506,39 +502,48 @@ function pickAc(field,val,e){
   document.getElementById('ac-'+field).style.display='none';
 }
 function hideAc(){setTimeout(()=>document.querySelectorAll('.ac-list').forEach(l=>l.style.display='none'),150)}
-
-let codeReader=null;
+ 
+let html5Scanner=null;
 async function openScanner(){
   document.getElementById('scanner-overlay').style.display='flex';
   document.getElementById('manual-serial').value='';
   try{
-    if(typeof ZXing==='undefined'||!navigator.mediaDevices){return}
-    const hints=new Map();
-    hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
-    codeReader=new ZXing.BrowserMultiFormatReader(hints);
-    const devices=await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
-    const back=devices.find(d=>/back|rear|environment/i.test(d.label))||devices[devices.length-1];
-    await codeReader.decodeFromVideoDevice(back?.deviceId,'scanner-video',result=>{
-      if(result){
-        const val=result.getText();
+    if(html5Scanner){try{await html5Scanner.stop()}catch(e){}html5Scanner=null}
+    document.getElementById('scanner-reader').innerHTML='';
+    html5Scanner=new Html5Qrcode('scanner-reader');
+    const config={fps:10,qrbox:{width:250,height:150},aspectRatio:1.7,
+      supportedScanTypes:[Html5QrcodeScanType.SCAN_TYPE_CAMERA]};
+    await html5Scanner.start(
+      {facingMode:'environment'},
+      config,
+      (decodedText)=>{
         closeScanner();
-        document.getElementById('f-serial').value=val;
-        showToast('Captured: '+val,'success');
+        document.getElementById('f-serial').value=decodedText;
+        showToast('Captured: '+decodedText,'success');
       }
-    });
-  }catch(e){console.warn('Scanner:',e)}
+    );
+  }catch(e){
+    console.warn('Scanner error:',e);
+    showToast('Camera unavailable — use manual entry below');
+  }
 }
-function closeScanner(){
+async function closeScanner(){
   document.getElementById('scanner-overlay').style.display='none';
-  if(codeReader){try{codeReader.reset()}catch(e){}codeReader=null}
+  if(html5Scanner){
+    try{
+      if(html5Scanner.isScanning)await html5Scanner.stop();
+      html5Scanner.clear();
+    }catch(e){}
+    html5Scanner=null;
+  }
 }
-function useManualSerial(){
+async function useManualSerial(){
   const val=document.getElementById('manual-serial').value.trim();
   if(!val){showToast('Enter a serial number','error');return}
   document.getElementById('f-serial').value=val;
-  closeScanner();showToast('Serial: '+val,'success');
+  await closeScanner();showToast('Serial: '+val,'success');
 }
-
+ 
 function populateExpDept(){
   const sel=document.getElementById('exp-dept');
   const depts=[...new Set(db.assets.map(a=>a.department).filter(Boolean))].sort();
@@ -573,7 +578,7 @@ function doExport(){
   document.body.removeChild(a);URL.revokeObjectURL(url);
   showToast('Exported '+list.length+' assets','success');
 }
-
+ 
 function showToast(msg,type){
   const t=document.getElementById('toast');
   t.textContent=msg;t.className='toast'+(type?' '+type:'');
@@ -581,7 +586,7 @@ function showToast(msg,type){
   clearTimeout(t._timer);
   t._timer=setTimeout(()=>t.classList.remove('show'),2800);
 }
-
+ 
 renderStats();renderList();renderChips();
 </script>
 </body>
