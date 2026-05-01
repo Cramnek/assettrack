@@ -305,6 +305,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
     </div>
   </div>
   <div class="scanner-hint">Point camera at the barcode or QR code on the device</div>
+  <div id="scan-debug" style="padding:8px 16px;background:rgba(0,0,0,.7);font-size:11px;color:#94a3b8;line-height:1.6;min-height:40px"></div>
   <div class="scanner-manual">
     <input type="text" id="manual-serial" placeholder="Or type serial number manually..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
     <button class="scanner-manual-btn" onclick="useManualSerial()">Use this serial</button>
@@ -511,7 +512,15 @@ let scanStream=null;
 let scanAnimFrame=null;
 let barcodeDetector=null;
 
+function dbg(msg){
+  const el=document.getElementById('scan-debug');
+  if(el){el.innerHTML+=(el.innerHTML?'<br>':'')+msg;}
+  console.log('[SCAN]',msg);
+}
+
 async function openScanner(){
+  const el=document.getElementById('scan-debug');
+  if(el)el.innerHTML='';
   document.getElementById('scanner-overlay').style.display='flex';
   document.getElementById('manual-serial').value='';
   const video=document.getElementById('scanner-video');
@@ -519,78 +528,100 @@ async function openScanner(){
   const ctx=canvas.getContext('2d');
 
   try{
-    // Stop any existing stream
     if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}
     if(scanAnimFrame){cancelAnimationFrame(scanAnimFrame);scanAnimFrame=null;}
 
-    // Get camera stream with continuous autofocus
-    scanStream=await navigator.mediaDevices.getUserMedia({
-      video:{
-        facingMode:{exact:'environment'},
-        width:{ideal:1920},
-        height:{ideal:1080},
-        focusMode:'continuous',
-        advanced:[{focusMode:'continuous'}]
-      }
-    });
+    dbg('Starting camera...');
+    // First try exact environment, fallback to any environment
+    try{
+      scanStream=await navigator.mediaDevices.getUserMedia({
+        video:{facingMode:{exact:'environment'},width:{ideal:1280},height:{ideal:720}}
+      });
+    }catch(e){
+      dbg('Exact env failed, trying loose...');
+      scanStream=await navigator.mediaDevices.getUserMedia({
+        video:{facingMode:'environment'}
+      });
+    }
+
     video.srcObject=scanStream;
     await video.play();
+    const track=scanStream.getVideoTracks()[0];
+    const settings=track.getSettings();
+    dbg('Camera: '+settings.width+'x'+settings.height);
 
-    // Apply autofocus directly to track after stream starts (Samsung S24 fix)
+    // Apply focus
     setTimeout(async()=>{
       try{
-        const track=scanStream.getVideoTracks()[0];
         const caps=track.getCapabilities();
-        const adv={};
-        if(caps.focusMode?.includes('continuous')) adv.focusMode='continuous';
-        if(caps.exposureMode?.includes('continuous')) adv.exposureMode='continuous';
-        if(Object.keys(adv).length) await track.applyConstraints({advanced:[adv]});
-      }catch(e){}
-    },500);
+        dbg('Focus modes: '+(caps.focusMode||[]).join(','));
+        if(caps.focusMode?.includes('continuous')){
+          await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
+          dbg('Autofocus applied');
+        }
+      }catch(e){dbg('Focus err: '+e.message)}
+    },600);
 
-    // Try native BarcodeDetector first (Chrome Android, Samsung Internet)
-    const hasNative = 'BarcodeDetector' in window;
+    // Check BarcodeDetector
+    const hasNative='BarcodeDetector' in window;
+    dbg('BarcodeDetector: '+(hasNative?'YES':'NO'));
+
     if(hasNative){
-      const formats=['code_128','code_39','code_93','ean_13','ean_8','upc_a','upc_e','qr_code','data_matrix','pdf417','aztec','itf','codabar'];
-      const supported=await BarcodeDetector.getSupportedFormats().catch(()=>formats);
-      barcodeDetector=new BarcodeDetector({formats:supported});
-
+      const supported=await BarcodeDetector.getSupportedFormats().catch(()=>[]);
+      dbg('Formats: '+supported.slice(0,4).join(',')+' +more');
+      const formats=supported.length?supported:['code_128','code_39','ean_13','ean_8','upc_a','upc_e','qr_code'];
+      barcodeDetector=new BarcodeDetector({formats});
+      let frameCount=0;
+      let detected=false;
       async function detectFrame(){
-        if(!scanStream)return;
-        if(video.readyState===video.HAVE_ENOUGH_DATA){
+        if(!scanStream||detected)return;
+        if(video.readyState>=2){
+          frameCount++;
+          if(frameCount%30===0) dbg('Scanning... frame '+frameCount);
           canvas.width=video.videoWidth;
           canvas.height=video.videoHeight;
           ctx.drawImage(video,0,0);
           try{
             const barcodes=await barcodeDetector.detect(canvas);
             if(barcodes.length>0){
+              detected=true;
               const val=barcodes[0].rawValue;
-              if(val){closeScanner();document.getElementById('f-serial').value=val;showToast('Captured: '+val,'success');return;}
+              dbg('Found: '+val);
+              closeScanner();
+              document.getElementById('f-serial').value=val;
+              showToast('Captured: '+val,'success');
+              return;
             }
-          }catch(e){}
+          }catch(e){if(frameCount<5)dbg('Detect err: '+e.message)}
         }
         scanAnimFrame=requestAnimationFrame(detectFrame);
       }
       detectFrame();
     } else {
-      // Fallback: ZXing via CDN
+      dbg('Loading ZXing fallback...');
       if(!window.ZXingLoaded){
         await new Promise((res,rej)=>{
           const s=document.createElement('script');
           s.src='https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js';
-          s.onload=()=>{window.ZXingLoaded=true;res()};
-          s.onerror=rej;
+          s.onload=()=>{window.ZXingLoaded=true;dbg('ZXing loaded');res()};
+          s.onerror=(e)=>{dbg('ZXing load failed');rej(e)};
           document.head.appendChild(s);
         });
       }
       const codeReader=new ZXingBrowser.BrowserMultiFormatReader();
       codeReader.decodeFromVideoElement(video).then(result=>{
-        if(result){closeScanner();document.getElementById('f-serial').value=result.getText();showToast('Captured: '+result.getText(),'success');}
-      }).catch(()=>{});
+        if(result){
+          const val=result.getText();
+          dbg('ZXing found: '+val);
+          closeScanner();
+          document.getElementById('f-serial').value=val;
+          showToast('Captured: '+val,'success');
+        }
+      }).catch(e=>dbg('ZXing err: '+e.message));
       video._zxing=codeReader;
     }
   }catch(e){
-    console.warn('Scanner error:',e);
+    dbg('ERROR: '+e.message);
     showToast('Camera error — type serial manually');
   }
 }
