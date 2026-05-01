@@ -111,12 +111,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .scanner-title{font-size:16px;font-weight:600;color:#fff}
 .scanner-close{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);border:none;color:#fff;font-size:20px;cursor:pointer}
 .scanner-viewport{flex:1;position:relative;overflow:hidden;background:#111;display:flex;align-items:center;justify-content:center}
-#scanner-reader{width:100%!important;border:none!important;background:transparent!important}
-#scanner-reader video{width:100%!important;height:auto!important;object-fit:cover!important}
-#scanner-reader img{display:none!important}
-#scanner-reader canvas{display:none!important}
-#html5-qrcode-button-camera-permission,#html5-qrcode-button-camera-stop,#html5-qrcode-anchor-scan-type-change{display:none!important}
-#html5-qrcode-button-file-selection{display:none!important}
+
 @keyframes scan{0%,100%{top:15%}50%{top:80%}}
 .scanner-hint{color:#fff;font-size:14px;text-align:center;padding:16px;background:rgba(0,0,0,.6)}
 .scanner-manual{padding:16px;background:rgba(0,0,0,.7)}
@@ -301,7 +296,13 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
     <button class="scanner-close" onclick="closeScanner()">&#10005;</button>
   </div>
   <div class="scanner-viewport">
-    <div id="scanner-reader" style="width:100%;height:100%"></div>
+    <video id="scanner-video" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover;display:block"></video>
+    <canvas id="scanner-canvas" style="display:none"></canvas>
+    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+      <div style="width:75%;height:120px;border:2px solid #38bdf8;border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5);position:relative">
+        <div id="scan-line" style="position:absolute;left:8px;right:8px;height:2px;background:#38bdf8;top:50%;animation:scan 1.8s ease-in-out infinite"></div>
+      </div>
+    </div>
   </div>
   <div class="scanner-hint">Point camera at the barcode or QR code on the device</div>
   <div class="scanner-manual">
@@ -310,7 +311,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
   </div>
 </div>
 <div class="toast" id="toast"></div>
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
 <script>
 const DB_KEY='assettrack_v1';
 let db={assets:[],nextId:1};
@@ -506,70 +507,108 @@ function pickAc(field,val,e){
 }
 function hideAc(){setTimeout(()=>document.querySelectorAll('.ac-list').forEach(l=>l.style.display='none'),150)}
 
-let html5Scanner=null;
+let scanStream=null;
+let scanAnimFrame=null;
+let barcodeDetector=null;
+
 async function openScanner(){
   document.getElementById('scanner-overlay').style.display='flex';
   document.getElementById('manual-serial').value='';
+  const video=document.getElementById('scanner-video');
+  const canvas=document.getElementById('scanner-canvas');
+  const ctx=canvas.getContext('2d');
+
   try{
-    if(html5Scanner){try{await html5Scanner.stop()}catch(e){}html5Scanner=null}
-    document.getElementById('scanner-reader').innerHTML='';
-    html5Scanner=new Html5Qrcode('scanner-reader');
-    const config={
-      fps:15,
-      qrbox:{width:280,height:110},
-      aspectRatio:1.777,
-      supportedScanTypes:[Html5QrcodeScanType.SCAN_TYPE_CAMERA],
-      experimentalFeatures:{useBarCodeDetectorIfSupported:true}
-    };
-    await html5Scanner.start(
-      {facingMode:{exact:'environment'}},
-      config,
-      (decodedText)=>{
-        closeScanner();
-        document.getElementById('f-serial').value=decodedText;
-        showToast('Captured: '+decodedText,'success');
+    // Stop any existing stream
+    if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}
+    if(scanAnimFrame){cancelAnimationFrame(scanAnimFrame);scanAnimFrame=null;}
+
+    // Get camera stream with continuous autofocus
+    scanStream=await navigator.mediaDevices.getUserMedia({
+      video:{
+        facingMode:{exact:'environment'},
+        width:{ideal:1920},
+        height:{ideal:1080},
+        focusMode:'continuous',
+        advanced:[{focusMode:'continuous'}]
       }
-    );
-    // After stream starts, apply continuous autofocus directly on the video track
-    // This is the reliable method for Chrome on Android (Samsung, Pixel, etc.)
+    });
+    video.srcObject=scanStream;
+    await video.play();
+
+    // Apply autofocus directly to track after stream starts (Samsung S24 fix)
     setTimeout(async()=>{
       try{
-        const video=document.querySelector('#scanner-reader video');
-        if(!video||!video.srcObject)return;
-        const track=video.srcObject.getVideoTracks()[0];
-        if(!track)return;
+        const track=scanStream.getVideoTracks()[0];
         const caps=track.getCapabilities();
-        const constraints={};
-        if(caps.focusMode&&caps.focusMode.includes('continuous'))
-          constraints.focusMode='continuous';
-        if(caps.exposureMode&&caps.exposureMode.includes('continuous'))
-          constraints.exposureMode='continuous';
-        if(caps.whiteBalanceMode&&caps.whiteBalanceMode.includes('continuous'))
-          constraints.whiteBalanceMode='continuous';
-        if(Object.keys(constraints).length)
-          await track.applyConstraints({advanced:[constraints]});
-      }catch(e){console.log('Focus hint skipped:',e)}
-    },800);
+        const adv={};
+        if(caps.focusMode?.includes('continuous')) adv.focusMode='continuous';
+        if(caps.exposureMode?.includes('continuous')) adv.exposureMode='continuous';
+        if(Object.keys(adv).length) await track.applyConstraints({advanced:[adv]});
+      }catch(e){}
+    },500);
+
+    // Try native BarcodeDetector first (Chrome Android, Samsung Internet)
+    const hasNative = 'BarcodeDetector' in window;
+    if(hasNative){
+      const formats=['code_128','code_39','code_93','ean_13','ean_8','upc_a','upc_e','qr_code','data_matrix','pdf417','aztec','itf','codabar'];
+      const supported=await BarcodeDetector.getSupportedFormats().catch(()=>formats);
+      barcodeDetector=new BarcodeDetector({formats:supported});
+
+      async function detectFrame(){
+        if(!scanStream)return;
+        if(video.readyState===video.HAVE_ENOUGH_DATA){
+          canvas.width=video.videoWidth;
+          canvas.height=video.videoHeight;
+          ctx.drawImage(video,0,0);
+          try{
+            const barcodes=await barcodeDetector.detect(canvas);
+            if(barcodes.length>0){
+              const val=barcodes[0].rawValue;
+              if(val){closeScanner();document.getElementById('f-serial').value=val;showToast('Captured: '+val,'success');return;}
+            }
+          }catch(e){}
+        }
+        scanAnimFrame=requestAnimationFrame(detectFrame);
+      }
+      detectFrame();
+    } else {
+      // Fallback: ZXing via CDN
+      if(!window.ZXingLoaded){
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script');
+          s.src='https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js';
+          s.onload=()=>{window.ZXingLoaded=true;res()};
+          s.onerror=rej;
+          document.head.appendChild(s);
+        });
+      }
+      const codeReader=new ZXingBrowser.BrowserMultiFormatReader();
+      codeReader.decodeFromVideoElement(video).then(result=>{
+        if(result){closeScanner();document.getElementById('f-serial').value=result.getText();showToast('Captured: '+result.getText(),'success');}
+      }).catch(()=>{});
+      video._zxing=codeReader;
+    }
   }catch(e){
     console.warn('Scanner error:',e);
-    showToast('Camera unavailable — use manual entry below');
+    showToast('Camera error — type serial manually');
   }
 }
-async function closeScanner(){
+
+function closeScanner(){
   document.getElementById('scanner-overlay').style.display='none';
-  if(html5Scanner){
-    try{
-      if(html5Scanner.isScanning)await html5Scanner.stop();
-      html5Scanner.clear();
-    }catch(e){}
-    html5Scanner=null;
-  }
+  if(scanAnimFrame){cancelAnimationFrame(scanAnimFrame);scanAnimFrame=null;}
+  if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}
+  const video=document.getElementById('scanner-video');
+  if(video._zxing){try{video._zxing.reset()}catch(e){}video._zxing=null;}
+  video.srcObject=null;
+  barcodeDetector=null;
 }
-async function useManualSerial(){
+function useManualSerial(){
   const val=document.getElementById('manual-serial').value.trim();
   if(!val){showToast('Enter a serial number','error');return}
   document.getElementById('f-serial').value=val;
-  await closeScanner();showToast('Serial: '+val,'success');
+  closeScanner();showToast('Serial: '+val,'success');
 }
 
 function populateExpDept(){
