@@ -532,16 +532,20 @@ async function openScanner(){
     if(scanAnimFrame){cancelAnimationFrame(scanAnimFrame);scanAnimFrame=null;}
 
     dbg('Starting camera...');
-    // First try exact environment, fallback to any environment
     try{
       scanStream=await navigator.mediaDevices.getUserMedia({
-        video:{facingMode:{exact:'environment'},width:{ideal:1280},height:{ideal:720}}
+        video:{facingMode:{exact:'environment'},width:{ideal:3840},height:{ideal:2160}}
       });
     }catch(e){
-      dbg('Exact env failed, trying loose...');
-      scanStream=await navigator.mediaDevices.getUserMedia({
-        video:{facingMode:'environment'}
-      });
+      dbg('4K failed, trying 1080p...');
+      try{
+        scanStream=await navigator.mediaDevices.getUserMedia({
+          video:{facingMode:{exact:'environment'},width:{ideal:1920},height:{ideal:1080}}
+        });
+      }catch(e2){
+        dbg('1080p failed, trying any...');
+        scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+      }
     }
 
     video.srcObject=scanStream;
@@ -550,17 +554,25 @@ async function openScanner(){
     const settings=track.getSettings();
     dbg('Camera: '+settings.width+'x'+settings.height);
 
-    // Apply focus
+    // Try to apply zoom (2x) and best focus mode available
     setTimeout(async()=>{
       try{
         const caps=track.getCapabilities();
         dbg('Focus modes: '+(caps.focusMode||[]).join(','));
-        if(caps.focusMode?.includes('continuous')){
-          await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
-          dbg('Autofocus applied');
+        dbg('Zoom range: '+(caps.zoom?caps.zoom.min+'-'+caps.zoom.max:'none'));
+        const adv={};
+        // Focus: prefer continuous, then macro, else leave as-is
+        if(caps.focusMode?.includes('continuous')) adv.focusMode='continuous';
+        else if(caps.focusMode?.includes('macro')) adv.focusMode='macro';
+        // Zoom: use 1.5x if supported to make barcode bigger in frame
+        if(caps.zoom&&caps.zoom.max>=1.5){
+          adv.zoom=Math.min(2.0, caps.zoom.max);
+          dbg('Applying zoom: '+adv.zoom+'x');
         }
-      }catch(e){dbg('Focus err: '+e.message)}
-    },600);
+        if(Object.keys(adv).length) await track.applyConstraints({advanced:[adv]});
+        dbg('Constraints applied: '+JSON.stringify(adv));
+      }catch(e){dbg('Constraint err: '+e.message)}
+    },700);
 
     // Check BarcodeDetector
     const hasNative='BarcodeDetector' in window;
